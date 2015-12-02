@@ -13,6 +13,7 @@ unsigned long **sys_call_table;
 struct kprobe **arr_kp = NULL;
 int num_probes = 0;
 //extern const sys_call_ptr_t sys_call_table[];
+static struct kprobe ktest;
 
 
 static unsigned long **aquire_sys_call_table(void)
@@ -79,7 +80,7 @@ static int __init syscall_server_start(void)
 		if (sys_call_table[i+1] == sys_call_table[__NR_open]) printk(KERN_DEBUG "found sys_open, call #%d addr:%p \n", i+1, sys_call_table[i+1]);
 		
 		if(sys_call_table[1+i] != sys_call_table[__NR_seccomp]) {
-			kp = kmalloc(sizeof(struct kprobe), GFP_KERNEL);
+			kp = kmalloc(sizeof(struct kprobe), GFP_KERNEL); //may need to set fields to null...
 			kp->pre_handler = probe_pre_handler;
 			//kp->fault_handler = probe_fault_handler;
 			kp->addr = (void *)sys_call_table[1+i];
@@ -95,10 +96,13 @@ static int __init syscall_server_start(void)
 			*/
 		}
 	}
-	printk(KERN_DEBUG "attempt register probe to addr %p", arr_kp[0]->addr); 
-	ret = register_kprobe(arr_kp[0]);
+	
+	ktest->pre_handler = probe_pre_handler;
+	ktest->addr = (void *)sys_call_table[3];
+	printk(KERN_DEBUG "attempt register probe to addr %p", ktest->addr); 
+	ret = register_kprobe(ktest);
 	if (!(ret < 0)) { 
-		printk(KERN_DEBUG "registered probe to addr %p", arr_kp[0]->addr); 
+		printk(KERN_DEBUG "registered probe to addr %p", ktest->addr); 
 	}
 	else {
 		printk(KERN_DEBUG "unsucessful registering ret=%d",ret);
