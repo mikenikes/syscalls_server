@@ -97,12 +97,12 @@ static int __init syscall_server_start(void)
 		}
 	}
 	
-	ktest->pre_handler = probe_pre_handler;
-	ktest->addr = (void *)sys_call_table[3];
-	printk(KERN_DEBUG "attempt register probe to addr %p", ktest->addr); 
-	ret = register_kprobe(ktest);
+	ktest.pre_handler = probe_pre_handler;
+	ktest.addr = (void *)sys_call_table[3];
+	printk(KERN_DEBUG "attempt register probe to addr %p", ktest.addr); 
+	ret = register_kprobe(&ktest);
 	if (!(ret < 0)) { 
-		printk(KERN_DEBUG "registered probe to addr %p", ktest->addr); 
+		printk(KERN_DEBUG "registered probe to addr %p", ktest.addr); 
 	}
 	else {
 		printk(KERN_DEBUG "unsucessful registering ret=%d",ret);
