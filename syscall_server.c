@@ -1,12 +1,19 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/init.h>
+#include <linux/in.h>
+#include <linux/inet.h>
+#include <net/sock.h>
 #include <linux/syscalls.h>
 #include <linux/delay.h>
 #include <asm/paravirt.h>
 #include <linux/kprobes.h>
 #include <asm/unistd.h>
 #include <linux/slab.h>
-//#include <asm/syscall.h> //how the fuck?!
+//#include <asm/syscall.h> //???
+
+#define SERVERPORT 5555
+static struct socket *clientsocket=NULL;
 
 unsigned long **sys_call_table;
 
@@ -34,10 +41,39 @@ static unsigned long **aquire_sys_call_table(void)
 }
 
 static int probe_pre_handler(struct kprobe *probe, struct pt_regs *regs) {
-	printk(KERN_INFO "pre_handler: p->addr = 0x%p, ip = %lx,"
-		" flags = 0x%lx\n",
-        probe->addr, regs->ip, regs->flags);
+	/*
+	int len;
+	struct msghdr msg;
+	struct iovec iov;
+	struct sockaddr_in to;
+	mm_segment_t oldfs;
+	char buf[64];
+	
+	memset(&to,0, sizeof(to));
+	to.sin_family = AF_INET;
+	to.sin_addr.s_addr = in_aton( "127.0.0.1" );  
+	
+	to.sin_port = htons( (unsigned short)
+		SERVERPORT );
+	memset(&msg,0,sizeof(msg));
+	msg.msg_name = &to;
+	msg.msg_namelen = sizeof(to);
+	memcpy( buf, "hallo from kernel space", 24 );
+	iov.iov_base = buf;
+	iov.iov_len  = 24;
+	msg.msg_control = NULL;
+	msg.msg_controllen = 0;
+	msg.msg_iov    = &iov;
+	msg.msg_iovlen = 1;
+	
 
+	oldfs = get_fs();
+	set_fs( KERNEL_DS );
+	len = sock_sendmsg( clientsocket, &msg, 24 );
+	set_fs( oldfs );
+	//printk(KERN_INFO "syscall #%d, addr = 0x%p\n",
+    //    (void *)(probe->addr) - (void *)(sys_call_table[0]), probe->addr);
+	*/
 	return 0;
 }
 
@@ -51,9 +87,15 @@ static int probe_fault_handler(struct kprobe *probe,
 
 static int __init syscall_server_start(void) 
 {
+	//kprobe stuff
 	int i=1;
 	struct kprobe *kp;
 	int ret;
+	//socket stuff
+	struct msghdr msg;
+	struct iovec iov;
+	mm_segment_t oldfs;
+	struct sockaddr_in to;
 	/*
 	 * entry 0 is always a ni_syscall
 	 */
@@ -67,7 +109,14 @@ static int __init syscall_server_start(void)
 		i++;
 	}
 	
+	//init socket
+	if( sock_create( PF_INET,SOCK_DGRAM,IPPROTO_UDP,&clientsocket)<0 ){
+	printk( KERN_INFO "server: Error creating clientsocket.n" );
+	return -EIO;
+	}
+	
 
+	//more kprobe stuff
 	printk(KERN_DEBUG "%d entries in table to probe\n", num_probes);
 	arr_kp = kmalloc(sizeof(struct kprobe) * num_probes, GFP_KERNEL);
 	for (i = 0; i < num_probes; i++) {
@@ -120,6 +169,10 @@ static void __exit syscall_server_end(void)
 	 * entry 0 is always a ni_syscall
 	 */
 	int i;
+	unregister_kprobe(&ktest);
+	if( clientsocket )    sock_release( clientsocket );
+    printk(KERN_INFO "Closing Socket\n");
+	
 	if(!sys_call_table) {
 		printk(KERN_DEBUG "uninstalling syscall_server LKM, wtfmode\n");
 		return;
