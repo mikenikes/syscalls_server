@@ -41,7 +41,7 @@ static unsigned long **aquire_sys_call_table(void)
 }
 
 static int probe_pre_handler(struct kprobe *probe, struct pt_regs *regs) {
-	/*
+	
 	int len;
 	struct msghdr msg;
 	struct iovec iov;
@@ -55,9 +55,10 @@ static int probe_pre_handler(struct kprobe *probe, struct pt_regs *regs) {
 	
 	to.sin_port = htons( (unsigned short)
 		SERVERPORT );
-	memset(&msg,0,sizeof(msg));
+	
+	msg.msg_flags = 0;
 	msg.msg_name = &to;
-	msg.msg_namelen = sizeof(to);
+	msg.msg_namelen = sizeof(struct sockaddr_in);
 	memcpy( buf, "hallo from kernel space", 24 );
 	iov.iov_base = buf;
 	iov.iov_len  = 24;
@@ -73,7 +74,7 @@ static int probe_pre_handler(struct kprobe *probe, struct pt_regs *regs) {
 	set_fs( oldfs );
 	//printk(KERN_INFO "syscall #%d, addr = 0x%p\n",
     //    (void *)(probe->addr) - (void *)(sys_call_table[0]), probe->addr);
-	*/
+	
 	return 0;
 }
 
@@ -92,18 +93,12 @@ static int __init syscall_server_start(void)
 	struct kprobe *kp;
 	int ret;
 	//socket stuff
-	struct msghdr msg;
-	struct iovec iov;
-	mm_segment_t oldfs;
-	struct sockaddr_in to;
-	/*
-	 * entry 0 is always a ni_syscall
-	 */
+	
 
+	//get syscall table
 	if(!(sys_call_table = aquire_sys_call_table()))
 		return -1;
 	 
-	
 	while(sys_call_table[i] != sys_call_table[__NR_seccomp]) {
 		num_probes++;
 		i++;
@@ -111,10 +106,12 @@ static int __init syscall_server_start(void)
 	
 	//init socket
 	if( sock_create( PF_INET,SOCK_DGRAM,IPPROTO_UDP,&clientsocket)<0 ){
-	printk( KERN_INFO "server: Error creating clientsocket.n" );
-	return -EIO;
+		printk( KERN_INFO "server: Error creating clientsocket.n" );
+		return -EIO;
 	}
-	
+	else {
+		printk(KERN_INFO "success making socket");
+	}
 
 	//more kprobe stuff
 	printk(KERN_DEBUG "%d entries in table to probe\n", num_probes);
@@ -124,7 +121,7 @@ static int __init syscall_server_start(void)
 	}
 	
 	for (i = 0; i < num_probes; i++) {
-	
+		//entry 0 is always a ni_syscall
 		if (sys_call_table[i+1] == sys_call_table[__NR_read]) printk(KERN_DEBUG "found sys_read, call #%d addr:%p \n", i+1, sys_call_table[i+1]);
 		if (sys_call_table[i+1] == sys_call_table[__NR_open]) printk(KERN_DEBUG "found sys_open, call #%d addr:%p \n", i+1, sys_call_table[i+1]);
 		
@@ -148,14 +145,14 @@ static int __init syscall_server_start(void)
 	
 	ktest.pre_handler = probe_pre_handler;
 	ktest.addr = (void *)sys_call_table[3];
-	printk(KERN_DEBUG "attempt register probe to addr %p", ktest.addr); 
+	printk(KERN_DEBUG "attempt register probe to addr %p\n", ktest.addr); 
 	ret = register_kprobe(&ktest);
 	if (!(ret < 0)) { 
-		printk(KERN_DEBUG "registered probe to addr %p", ktest.addr); 
+		printk(KERN_DEBUG "registered probe to addr %p\n", ktest.addr); 
 	}
 	else {
-		printk(KERN_DEBUG "unsucessful registering ret=%d",ret);
-		if (ret == -EINVAL) printk(KERN_DEBUG "you dun fucked up kprobe code");
+		printk(KERN_DEBUG "unsucessful registering ret=%d\n",ret);
+		if (ret == -EINVAL) printk(KERN_DEBUG "you dun fucked up kprobe code\n");
 		return ret;
 	}
 	
