@@ -10,17 +10,19 @@
 #include <linux/kprobes.h>
 #include <asm/unistd.h>
 #include <linux/slab.h>
-//#include <asm/syscall.h> //???
+#include <linux/fdtable.h>
+#include <linux/string.h>
 
-#define SERVERPORT 5555
-static struct socket *clientsocket=NULL;
+#define SERVERPORT 15555
+#define SERVERADDR "127.0.0.1"
+static struct socket *clientsocket = NULL;
 
 unsigned long **sys_call_table;
-
-struct kprobe **arr_kp = NULL;
 int num_probes = 0;
-//extern const sys_call_ptr_t sys_call_table[];
-static struct kprobe ktest;
+char strbuf[256];
+
+static struct jprobe jp_open;
+static struct jprobe jp_close;
 
 
 static unsigned long **aquire_sys_call_table(void)
@@ -40,60 +42,102 @@ static unsigned long **aquire_sys_call_table(void)
 	return NULL;
 }
 
-static int probe_pre_handler(struct kprobe *probe, struct pt_regs *regs) {
-	
-	int len;
+static void send_udp_msg(char* msgstr, int msglen) {
 	struct msghdr msg;
 	struct iovec iov;
-	struct sockaddr_in to;
 	mm_segment_t oldfs;
-	char buf[64];
+	struct sockaddr_in to;
 	
 	memset(&to,0, sizeof(to));
 	to.sin_family = AF_INET;
-	to.sin_addr.s_addr = in_aton( "127.0.0.1" );  
-	
-	to.sin_port = htons( (unsigned short)
-		SERVERPORT );
-	
-	msg.msg_flags = 0;
+	to.sin_addr.s_addr = in_aton( SERVERADDR );  
+	to.sin_port = htons( (unsigned short) SERVERPORT );
+	memset(&msg,0,sizeof(msg));
 	msg.msg_name = &to;
-	msg.msg_namelen = sizeof(struct sockaddr_in);
-	memcpy( buf, "hallo from kernel space", 24 );
-	iov.iov_base = buf;
-	iov.iov_len  = 24;
+	msg.msg_namelen = sizeof(to);
+	iov.iov_base = msgstr;
+	iov.iov_len  = msglen;
 	msg.msg_control = NULL;
 	msg.msg_controllen = 0;
 	msg.msg_iov    = &iov;
 	msg.msg_iovlen = 1;
-	
-
 	oldfs = get_fs();
 	set_fs( KERNEL_DS );
-	len = sock_sendmsg( clientsocket, &msg, 24 );
+	sock_sendmsg( clientsocket, &msg, msglen );
 	set_fs( oldfs );
-	//printk(KERN_INFO "syscall #%d, addr = 0x%p\n",
-    //    (void *)(probe->addr) - (void *)(sys_call_table[0]), probe->addr);
+}
+
+static asmlinkage long jp_open_entry(const char __user *filename, int flags, umode_t mode) {
+	char *slowname;
+	slowname = kmalloc(10 * sizeof(char), GFP_KERNEL);
+	if (!slowname) { 
+		printk(KERN_ERR "alloc failed");
+		goto JPO_ERR;
+	}
 	
+	//slow down call if we open this specific file
+	strcpy(slowname,"client.js");
+	if (strstr(filename,slowname)){
+		sprintf(strbuf "!!!!!!SLOWING DOWN OPENING client.js\n");
+		send_udp_msg(strbuf,strlen(strbuf));
+		msleep(5000);
+	}
+	
+	//printk(KERN_ERR "open - filename: %s, flags: %d, modes: %d\n", filename, flags, mode);
+	sprintf(strbuf, "open - filename: %s, flags: %d, modes: %d\n", filename, flags, mode);
+	send_udp_msg(strbuf,strlen(strbuf));
+	kfree(slowname);
+	JPO_ERR: jprobe_return();
 	return 0;
 }
 
-static int probe_fault_handler(struct kprobe *probe,
-			       struct pt_regs *regs, int trap)
-{
-	printk(KERN_DEBUG "probe_fault_handler: addr %p, trap %i\n",
-	       probe->addr, trap);
-	return 0;
+static asmlinkage long jp_close_entry(unsigned int fd) {
+	struct files_struct *files = current->files;
+	char *tmp;
+	char *pathname;
+	struct file *file;
+	struct path *path;
+	
+	spin_lock(&files->file_lock);
+	file = fcheck_files(files, fd);
+	if (!file) {
+		spin_unlock(&files->file_lock);
+		goto JPE_ERR;
+	}
+	
+	path = &file->f_path;
+	path_get(path);
+	spin_unlock(&files->file_lock);
+	
+	tmp = (char *)__get_free_page(GFP_TEMPORARY);
+	
+	if (!tmp) {
+		path_put(path);
+		goto JPE_ERR;
+	}
+
+	pathname = d_path(path, tmp, PAGE_SIZE);
+	path_put(path);
+	
+	if (IS_ERR(pathname)) {
+		free_page((unsigned long)tmp);
+		goto JPE_ERR;
+	}
+
+	/* do something here with pathname */
+	printk(KERN_ERR "close - fd: %d, filename: %s\n", fd, pathname);
+
+	free_page((unsigned long)tmp);
+	
+	JPE_ERR: jprobe_return();
+	return 0; 
 }
 
 static int __init syscall_server_start(void) 
 {
 	//kprobe stuff
 	int i=1;
-	struct kprobe *kp;
 	int ret;
-	//socket stuff
-	
 
 	//get syscall table
 	if(!(sys_call_table = aquire_sys_call_table()))
@@ -105,89 +149,52 @@ static int __init syscall_server_start(void)
 	}
 	
 	//init socket
-	if( sock_create( PF_INET,SOCK_DGRAM,IPPROTO_UDP,&clientsocket)<0 ){
+	if( sock_create( PF_INET,SOCK_DGRAM,IPPROTO_UDP,&clientsocket) < 0 ){
 		printk( KERN_INFO "server: Error creating clientsocket.n" );
 		return -EIO;
 	}
 	else {
 		printk(KERN_INFO "success making socket");
 	}
+	
+	//jprobe for open/close
+	jp_open.kp.addr = (void *) sys_call_table[__NR_open];
+	jp_open.entry = jp_open_entry;
+	
+	jp_close.kp.addr = (void *) sys_call_table[__NR_close];
+	jp_close.entry = jp_close_entry;
 
-	//more kprobe stuff
-	printk(KERN_DEBUG "%d entries in table to probe\n", num_probes);
-	arr_kp = kmalloc(sizeof(struct kprobe) * num_probes, GFP_KERNEL);
-	for (i = 0; i < num_probes; i++) {
-		arr_kp[i] = NULL;
-	}
-	
-	for (i = 0; i < num_probes; i++) {
-		//entry 0 is always a ni_syscall
-		if (sys_call_table[i+1] == sys_call_table[__NR_read]) printk(KERN_DEBUG "found sys_read, call #%d addr:%p \n", i+1, sys_call_table[i+1]);
-		if (sys_call_table[i+1] == sys_call_table[__NR_open]) printk(KERN_DEBUG "found sys_open, call #%d addr:%p \n", i+1, sys_call_table[i+1]);
-		
-		if(sys_call_table[1+i] != sys_call_table[__NR_seccomp]) {
-			kp = kmalloc(sizeof(struct kprobe), GFP_KERNEL); //may need to set fields to null...
-			kp->pre_handler = probe_pre_handler;
-			//kp->fault_handler = probe_fault_handler;
-			kp->addr = (void *)sys_call_table[1+i];
-			arr_kp[i] = kp;
-			printk(KERN_DEBUG "adding probe #%d to syscall %d, addr:%p\n", i, i+1, sys_call_table[i+1]);
-			/*
-			ret = register_kprobe(arr_kp[i]);
-			if (ret < 0) printk(KERN_DEBUG "registered probe %d", i); 
-			else {
-				printk(KERN_DEBUG "unsucessful registering ret=%d",ret);
-				return ret;
-			}
-			*/
-		}
-	}
-	
-	ktest.pre_handler = probe_pre_handler;
-	ktest.addr = (void *)sys_call_table[3];
-	printk(KERN_DEBUG "attempt register probe to addr %p\n", ktest.addr); 
-	ret = register_kprobe(&ktest);
+	ret = register_jprobe(&jp_open);
 	if (!(ret < 0)) { 
-		printk(KERN_DEBUG "registered probe to addr %p\n", ktest.addr); 
+		printk(KERN_DEBUG "registered probe to addr %p\n", jp_open.kp.addr); 
 	}
 	else {
 		printk(KERN_DEBUG "unsucessful registering ret=%d\n",ret);
-		if (ret == -EINVAL) printk(KERN_DEBUG "you dun fucked up kprobe code\n");
+		if (ret == -EINVAL) printk(KERN_DEBUG "einvalue error in jprobe\n");
 		return ret;
 	}
-	
-
+	ret = register_jprobe(&jp_close);
+	if (!(ret < 0)) { 
+		printk(KERN_DEBUG "registered probe to addr %p\n", jp_close.kp.addr); 
+	}
+	else {
+		printk(KERN_DEBUG "unsucessful registering ret=%d\n",ret);
+		if (ret == -EINVAL) printk(KERN_DEBUG "einvalue error in jprobe\n");
+		return ret;
+	}
 	return 0;
 }
 
 static void __exit syscall_server_end(void) 
 {
-	/*
-	 * entry 0 is always a ni_syscall
-	 */
-	int i;
-	unregister_kprobe(&ktest);
+
+	unregister_jprobe(&jp_open);
+	unregister_jprobe(&jp_close);
 	if( clientsocket )    sock_release( clientsocket );
     printk(KERN_INFO "Closing Socket\n");
 	
-	if(!sys_call_table) {
-		printk(KERN_DEBUG "uninstalling syscall_server LKM, wtfmode\n");
-		return;
-	}
 	
 	printk(KERN_DEBUG "uninstalling syscall_server LKM\n");
-	/*
-	for (i = 0; i < num_probes; i++) {
-		if (arr_kp[i]) unregister_kprobe(arr_kp[i]);
-	}
-	*/
-	
-	/*
-	write_cr0(original_cr0 & ~0x00010000);
-	sys_call_table[__NR_read] = (unsigned long *)ref_sys_read;
-	write_cr0(original_cr0);
-	*/
-	msleep(2000);
 	
 }
 
