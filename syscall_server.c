@@ -76,14 +76,14 @@ static asmlinkage long jp_open_entry(const char __user *filename, int flags, umo
 	}
 	
 	//slow down call if we open this specific file
+	//though with all the random function calls, this is already pretty slow...
 	strcpy(slowname,"client.js");
 	if (strstr(filename,slowname)){
-		sprintf(strbuf "!!!!!!SLOWING DOWN OPENING client.js\n");
+		sprintf(strbuf, "!!!!!!SLOWING DOWN OPENING client.js\n");
 		send_udp_msg(strbuf,strlen(strbuf));
 		msleep(5000);
 	}
 	
-	//printk(KERN_ERR "open - filename: %s, flags: %d, modes: %d\n", filename, flags, mode);
 	sprintf(strbuf, "open - filename: %s, flags: %d, modes: %d\n", filename, flags, mode);
 	send_udp_msg(strbuf,strlen(strbuf));
 	kfree(slowname);
@@ -125,8 +125,9 @@ static asmlinkage long jp_close_entry(unsigned int fd) {
 	}
 
 	/* do something here with pathname */
-	printk(KERN_ERR "close - fd: %d, filename: %s\n", fd, pathname);
-
+	sprintf(strbuf, "close - fd: %d, filename: %s\n", fd, pathname);
+	send_udp_msg(strbuf,strlen(strbuf));
+	
 	free_page((unsigned long)tmp);
 	
 	JPE_ERR: jprobe_return();
@@ -163,15 +164,17 @@ static int __init syscall_server_start(void)
 	
 	jp_close.kp.addr = (void *) sys_call_table[__NR_close];
 	jp_close.entry = jp_close_entry;
-
+	
+	strcpy(strbuf, "syscall_server started up\n");
+	send_udp_msg(strbuf, strlen(strbuf));
+	
 	ret = register_jprobe(&jp_open);
 	if (!(ret < 0)) { 
 		printk(KERN_DEBUG "registered probe to addr %p\n", jp_open.kp.addr); 
 	}
 	else {
 		printk(KERN_DEBUG "unsucessful registering ret=%d\n",ret);
-		if (ret == -EINVAL) printk(KERN_DEBUG "einvalue error in jprobe\n");
-		return ret;
+		goto STARTUP_ERR;
 	}
 	ret = register_jprobe(&jp_close);
 	if (!(ret < 0)) { 
@@ -180,9 +183,16 @@ static int __init syscall_server_start(void)
 	else {
 		printk(KERN_DEBUG "unsucessful registering ret=%d\n",ret);
 		if (ret == -EINVAL) printk(KERN_DEBUG "einvalue error in jprobe\n");
-		return ret;
+		goto STARTUP_ERR;
 	}
+	
+	
 	return 0;
+	
+	STARTUP_ERR:
+	sprintf(strbuf, "...and fails during startup with ret=%d",ret);
+	send_udp_msg(strbuf, strlen(strbuf));
+	return -1;
 }
 
 static void __exit syscall_server_end(void) 
@@ -190,6 +200,8 @@ static void __exit syscall_server_end(void)
 
 	unregister_jprobe(&jp_open);
 	unregister_jprobe(&jp_close);
+	sprintf(strbuf, "server stopping");
+	send_udp_msg(strbuf, strlen(strbuf));
 	if( clientsocket )    sock_release( clientsocket );
     printk(KERN_INFO "Closing Socket\n");
 	
